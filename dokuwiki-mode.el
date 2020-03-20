@@ -228,6 +228,45 @@ This variant of `rx' supports common Markdown named REGEXPS."
                (group (+ blank)))
   "Regular expression for matching list items.")
 
+(defun dokuwiki-cur-list-item-end (level)
+  "Move to end of list item with pre-marker indentation LEVEL.
+Return the point at the end when a list item was found at the
+original point.  If the point is not in a list item, do nothing."
+  (let (indent)
+    (forward-line)
+    (setq indent (current-indentation))
+    (while
+        (cond
+         ;; Stop at end of the buffer.
+         ((eobp) nil)
+         ;; Continue while indentation is the same or greater
+         ((>= indent level) t)
+         ;; Continue if the current line is blank
+         ((looking-at markdown-regex-blank-line) t)
+         ;; Stop if current indentation is less than list item
+         ;; and the previous line was blank.
+         ((and (< indent level)
+               (markdown-prev-line-blank))
+          nil)
+         ;; Stop at a new list items of the same or lesser
+         ;; indentation, headings, and horizontal rules.
+         ((looking-at (concat "\\(?:" markdown-regex-list
+                              "\\)"))
+          nil)
+         ;; Otherwise, continue.
+         (t t))
+      (forward-line)
+      (setq indent (current-indentation)))
+    ;; Don't skip over whitespace for empty list items (marker and
+    ;; whitespace only), just move to end of whitespace.
+    (if (save-excursion
+          (beginning-of-line)
+          (looking-at (concat markdown-regex-list "[ \t]*$")))
+        (goto-char (match-end 3))
+      (skip-chars-backward " \t\n"))
+    (end-of-line)
+    (point)))
+
 (defun dokuwiki--cur-list-item-bounds ()
   "Return a list describing the list item at point.
 Assumes that match data is set for `markdown-regex-list'.  See the
@@ -241,7 +280,7 @@ the returned list."
                     (match-beginning 2) (match-end 3)))
            (checkbox (match-string-no-properties 4))
            (match (butlast (match-data t)))
-           (end (markdown-cur-list-item-end nonlist-indent)))
+           (end (dokuwiki-cur-list-item-end nonlist-indent)))
 	  (list begin end indent nonlist-indent marker checkbox match))))
 
 (defun dokuwiki-syntax-propertize-list-items (start end)
@@ -283,6 +322,37 @@ giving the bounds of the current and parent list items."
             (put-text-property first last 'dokuwiki-list-item bounds)))))
         (end-of-line)))))
 
+(defun dokuwiki-cur-list-item-bounds ()
+  "Return bounds for list item at point.
+Return a list of the following form:
+
+    (begin end indent nonlist-indent marker checkbox match)
+
+The named components are:
+
+  - begin: Position of beginning of list item, including leading indentation.
+  - end: Position of the end of the list item, including list item text.
+  - indent: Number of characters of indentation before list marker (an integer).
+  - nonlist-indent: Number characters of indentation, list
+    marker, and whitespace following list marker (an integer).
+  - marker: String containing the list marker and following whitespace
+            (e.g., \"- \" or \"* \").
+  - checkbox: String containing the GFM checkbox portion, if any,
+    including any trailing whitespace before the text
+    begins (e.g., \"[x] \").
+  - match: match data for markdown-regex-list
+
+As an example, for the following unordered list item
+
+   - item
+
+the returned list would be
+
+    (1 14 3 5 \"- \" nil (1 6 1 4 4 5 5 6))
+
+If the point is not inside a list item, return nil."
+  (car (get-text-property (point-at-bol) 'dokuwiki-list-item)))
+
 (defun dokuwiki-code-block-search (limit)
   (if (not (looking-at "[-*]"))
       (re-search-forward ".*$" limit t)))
@@ -302,7 +372,6 @@ See also `outline-level'."
    (if (re-search-backward "^=+" nil t)
        (- (match-end 0) (match-beginning 0))
      0)))
-;; DEBUG: strange regexp
 
 ;;;; Work with `outline-magic'
 (eval-after-load "outline-magic"
@@ -445,37 +514,6 @@ See also `outline-level'."
   (interactive)
   (dokuwiki-insert-base "  - " ""))
 
-(defun dokuwiki-cur-list-item-bounds ()
-  "Return bounds for list item at point.
-Return a list of the following form:
-
-    (begin end indent nonlist-indent marker checkbox match)
-
-The named components are:
-
-  - begin: Position of beginning of list item, including leading indentation.
-  - end: Position of the end of the list item, including list item text.
-  - indent: Number of characters of indentation before list marker (an integer).
-  - nonlist-indent: Number characters of indentation, list
-    marker, and whitespace following list marker (an integer).
-  - marker: String containing the list marker and following whitespace
-            (e.g., \"- \" or \"* \").
-  - checkbox: String containing the GFM checkbox portion, if any,
-    including any trailing whitespace before the text
-    begins (e.g., \"[x] \").
-  - match: match data for markdown-regex-list
-
-As an example, for the following unordered list item
-
-   - item
-
-the returned list would be
-
-    (1 14 3 5 \"- \" nil (1 6 1 4 4 5 5 6))
-
-If the point is not inside a list item, return nil."
-  (car (get-text-property (point-at-bol) 'dokuwiki-list-item)))
-
 (defun dokuwiki-insert-list (&optional arg)
   "Insert a new list item.
 If the point is inside unordered list, insert a bullet mark.  If
@@ -493,7 +531,7 @@ increase the indentation by one level."
     (save-match-data
       ;; Look for a list item on current or previous non-blank line
       (save-excursion
-        (dokuwiki-syntax-propertize-list-items (point-at-bol) (point-at-eol))
+        (dokuwiki-syntax-propertize-list-items (point-at-bol) (point-at-eol)) ; TODO: tmp
         (while (and (not (setq bounds (dokuwiki-cur-list-item-bounds)))
                     (not (bobp))
                     (dokuwiki-cur-line-blank-p))
@@ -578,7 +616,7 @@ increase the indentation by one level."
   (insert "------")
   (beginning-of-line))
 
-;;; Tools -----------------------------------------------------------
+;;; Tools for insert -----------------------------------------------------------
 
 (defun dokuwiki-cur-line-blank-p ()
   "Return t if the current line is blank and nil otherwise."
@@ -628,7 +666,6 @@ and S1 and S2 were only inserted."
             b (region-end)
             new-point (+ (point) (length s1))))
      ;; Thing (word) at point
-	 ;; TODO: dependancy!!
      ((setq bounds (bounds-of-thing-at-point (or thing 'word)))
       (setq a (car bounds)
             b (cdr bounds)
